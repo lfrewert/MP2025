@@ -26,13 +26,13 @@ int IN4 = 4;   // Motor B Richtung 2
 ICM42688 IMU(Wire, 0x68);
 
 // ========================================
-// PID REGLER PARAMETER
+// PID REGLER PARAMETE
 // ========================================
 // Diese Werte müssen angepasst werden!
 // Tuning-Reihenfolge: Erst Kp, dann Kd, zuletzt Ki
-float Kp = 45.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung
+float Kp = 80.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung
 float Ki = 0.0;   // Integral-Anteil: Korrigiert bleibende Abweichung über Zeit
-float Kd = 10.0;  // Differential-Anteil: Dämpft Überschwingen
+float Kd = 20.0;  // Differential-Anteil: Dämpft Überschwingen
 
 // ========================================
 // PID REGLER VARIABLEN
@@ -53,9 +53,9 @@ float deltaTime = 0.0;           // Zeit zwischen zwei Loop-Durchläufen in Seku
 // ========================================
 // MOTOR GRENZEN
 // ========================================
-int minSpeed = 140;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
-int maxSpeed = 210;        // Maximale PWM (255 = volle Geschwindigkeit)
-int deadzone = 70;         // Totzone: PID-Output unter diesem Wert wird ignoriert
+int minSpeed = 80;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
+int maxSpeed = 230;        // Maximale PWM (255 = volle Geschwindigkeit)
+int deadzone = 80;         // Totzone: PID-Output unter diesem Wert wird ignoriert
 int hysteresis = 50;       // Hysterese: Läuft Motor schon, darf er bis hier weiterlaufen
 
 // ========================================
@@ -76,13 +76,13 @@ float spikeThreshold = 0.3;      // Sprünge über 0.5g werden als Spike ignorie
 
 // Complementary Filter Gewichtung:
 // 0.98 = 98% Gyro (schnell, aber driftet), 2% Accel (langsam, aber stabil)
-float complementaryFilter = 0.99;
+float complementaryFilter = 0.90;
 
 // ========================================
 // STURZ-ERKENNUNG MIT DEBOUNCING
 // ========================================
 #define FALL_THRESHOLD 90.0       // Winkel-Grenze in Grad
-#define FALL_SAMPLES_REQUIRED 30  // Anzahl aufeinanderfolgende Samples über Grenze
+#define FALL_SAMPLES_REQUIRED 300  // Anzahl aufeinanderfolgende Samples über Grenze
 int fallCounter = 0;              // Zähler für Samples über Grenze
 
 // ========================================

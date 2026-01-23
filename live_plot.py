@@ -30,7 +30,7 @@ MAX_POINTS = 200  # Anzahl der anzuzeigenden Datenpunkte (ca. 10 Sekunden bei 20
 time_data = deque(maxlen=MAX_POINTS)
 pitch_data = deque(maxlen=MAX_POINTS)
 output_data = deque(maxlen=MAX_POINTS)
-freq_data = deque(maxlen=MAX_POINTS)
+# freq_data = deque(maxlen=MAX_POINTS)  # Frequenz-Plot auskommentiert
 
 time_counter = 0
 
@@ -65,7 +65,7 @@ except serial.SerialException as e:
 # ========================================
 # PLOT SETUP
 # ========================================
-fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 9))
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
 fig.suptitle('Self-Balancing Robot - Live Monitoring', fontsize=16, fontweight='bold')
 
 # Pitch-Plot
@@ -92,15 +92,15 @@ ax2.grid(True, alpha=0.3)
 ax2.legend(loc='upper right')
 ax2.set_title('Motor-Output', fontsize=11)
 
-# Frequenz-Plot
-line_freq, = ax3.plot([], [], 'g-', linewidth=2, label='Loop Frequency')
-ax3.axhline(y=500, color='b', linestyle='--', alpha=0.5, label='Target (500 Hz)')
-ax3.set_xlabel('Sample #', fontsize=12, fontweight='bold')
-ax3.set_ylabel('Frequenz [Hz]', fontsize=12, fontweight='bold')
-ax3.set_ylim(0, 600)
-ax3.grid(True, alpha=0.3)
-ax3.legend(loc='upper right')
-ax3.set_title('Control Loop Frequenz', fontsize=11)
+# # Frequenz-Plot (auskommentiert)
+# line_freq, = ax3.plot([], [], 'g-', linewidth=2, label='Loop Frequency')
+# ax3.axhline(y=500, color='b', linestyle='--', alpha=0.5, label='Target (500 Hz)')
+# ax3.set_xlabel('Sample #', fontsize=12, fontweight='bold')
+# ax3.set_ylabel('Frequenz [Hz]', fontsize=12, fontweight='bold')
+# ax3.set_ylim(0, 600)
+# ax3.grid(True, alpha=0.3)
+# ax3.legend(loc='upper right')
+# ax3.set_title('Control Loop Frequenz', fontsize=11)
 
 plt.tight_layout()
 
@@ -126,19 +126,19 @@ def read_serial():
             if match:
                 pitch = float(match.group(1))
                 output = float(match.group(2))
-                freq = float(match.group(3))
+                # freq = float(match.group(3))  # Frequenz nicht mehr verwendet
 
                 # Daten zu Buffer hinzufügen
                 time_data.append(time_counter)
                 pitch_data.append(pitch)
                 output_data.append(output)
-                freq_data.append(freq)
+                # freq_data.append(freq)  # Frequenz-Plot auskommentiert
 
                 time_counter += 1
 
                 # Konsolenausgabe (alle 10 Samples)
                 if time_counter % 10 == 0:
-                    print(f"[{time_counter:4d}] Pitch: {pitch:6.2f}° | Output: {output:6.1f} | Freq: {freq:3.0f} Hz")
+                    print(f"[{time_counter:4d}] Pitch: {pitch:6.2f}° | Output: {output:6.1f}")
 
                 return True
             else:
@@ -164,7 +164,7 @@ def animate(frame):
     if len(time_data) > 0:
         line_pitch.set_data(time_data, pitch_data)
         line_output.set_data(time_data, output_data)
-        line_freq.set_data(time_data, freq_data)
+        # line_freq.set_data(time_data, freq_data)  # Frequenz-Plot auskommentiert
 
         # X-Achse anpassen (sliding window)
         if len(time_data) >= MAX_POINTS:
@@ -176,9 +176,9 @@ def animate(frame):
 
         ax1.set_xlim(x_min, x_max)
         ax2.set_xlim(x_min, x_max)
-        ax3.set_xlim(x_min, x_max)
+        # ax3.set_xlim(x_min, x_max)  # ax3 nicht mehr vorhanden
 
-    return line_pitch, line_output, line_freq
+    return line_pitch, line_output
 
 # ========================================
 # CLEANUP BEI PROGRAMMENDE
@@ -190,8 +190,8 @@ def on_close(event):
     if len(pitch_data) > 0:
         print(f"Insgesamt {len(pitch_data)} Datenpunkte aufgezeichnet")
         print(f"Pitch: min={min(pitch_data):.2f}°, max={max(pitch_data):.2f}°, avg={sum(pitch_data)/len(pitch_data):.2f}°")
-        if len(freq_data) > 0:
-            print(f"Frequenz: avg={sum(freq_data)/len(freq_data):.0f} Hz")
+        # if len(freq_data) > 0:
+        #     print(f"Frequenz: avg={sum(freq_data)/len(freq_data):.0f} Hz")
     print("=" * 60)
     ser.close()
     sys.exit(0)
