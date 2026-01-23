@@ -30,9 +30,9 @@ ICM42688 IMU(Wire, 0x68);
 // ========================================
 // Diese Werte müssen angepasst werden!
 // Tuning-Reihenfolge: Erst Kp, dann Kd, zuletzt Ki
-float Kp = 5.0;   // Proportional-Anteil: Reagiert auf aktuelle Abweichung
+float Kp = 50.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung
 float Ki = 0.0;   // Integral-Anteil: Korrigiert bleibende Abweichung über Zeit
-float Kd = 2.2;   // Differential-Anteil: Dämpft Oszillationen
+float Kd = 5.0;   // Differential-Anteil: Dämpft Oszillationen + schnellere Reaktion
 
 // ========================================
 // PID REGLER VARIABLEN
@@ -42,7 +42,6 @@ float input = 0.0;         // Aktueller Winkel vom IMU (pitch)
 float output = 0.0;        // PID-Ausgabe → Motor-PWM-Wert
 float lastError = 0.0;     // Fehler vom letzten Durchlauf (für D-Anteil)
 float integral = 0.0;      // Aufsummierter Fehler (für I-Anteil)
-float derivativeSmoothed = 0.0;  // Geglätteter D-Anteil
 
 // ========================================
 // TIMING VARIABLEN
@@ -53,9 +52,10 @@ float deltaTime = 0.0;           // Zeit zwischen zwei Loop-Durchläufen in Seku
 // ========================================
 // MOTOR GRENZEN
 // ========================================
-int minSpeed = 140;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
+int minSpeed = 100;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
 int maxSpeed = 255;        // Maximale PWM (255 = volle Geschwindigkeit)
-int deadzone = 100;         // Totzone: PID-Output unter diesem Wert wird ignoriert
+int deadzone = 50;         // Totzone: PID-Output unter diesem Wert wird ignoriert
+int hysteresis = 80;        // Hysterese: Läuft Motor schon, darf er bis hier weiterlaufen
 
 // ========================================
 // WINKEL-BERECHNUNG VARIABLEN
@@ -71,11 +71,11 @@ float pitchOffset = 0.0;   // Pitch-Offset für Referenzposition
 float accelXSmoothed = 0.0;      // Geglätteter AccelX Wert
 float accelZSmoothed = 0.0;      // Geglätteter AccelZ Wert
 float smoothingFactor = 0.3;     // 0.0 = sehr glatt, 1.0 = keine Glättung
-float spikeThreshold = 0.3;      // Sprünge über 0.5g werden als Spike ignoriert
+float spikeThreshold = 0.2;      // Sprünge über 0.5g werden als Spike ignoriert
 
 // Complementary Filter Gewichtung:
 // 0.98 = 98% Gyro (schnell, aber driftet), 2% Accel (langsam, aber stabil)
-float complementaryFilter = 0.96;
+float complementaryFilter = 0.92;
 
 // ========================================
 // STURZ-ERKENNUNG MIT DEBOUNCING
@@ -88,6 +88,11 @@ int fallCounter = 0;              // Zähler für Samples über Grenze
 // DEBUG-MODUS (per Serial-Kommando steuerbar)
 // ========================================
 bool debugMode = false;  // Debug-Ausgaben an/aus (Standard: aus für maximale Performance)
+
+// ========================================
+// MOTOR-STATUS (für Hysterese)
+// ========================================
+bool motorRunning = false;  // Merkt sich ob Motor aktuell läuft
 
 // ========================================
 // FUNKTIONS-DEKLARATIONEN
@@ -353,17 +358,13 @@ float computePID() {
   float I = Ki * integral;
   
   // ========================================
-  // D - DIFFERENTIAL ANTEIL (MIT GLÄTTUNG)
+  // D - DIFFERENTIAL ANTEIL (OHNE GLÄTTUNG)
   // ========================================
   // Reagiert auf Änderungsgeschwindigkeit des Fehlers
   // Dämpft Oszillationen und Überschwingen
   float derivative = (error - lastError) / deltaTime;
-  
-  // D-Anteil glätten um Rauschen zu unterdrücken
-  // 70% alter Wert, 30% neuer Wert
-  derivativeSmoothed = derivativeSmoothed * 0.7 + derivative * 0.3;
-  
-  float D = Kd * derivativeSmoothed;  // Nutze geglätteten Wert!
+
+  float D = Kd * derivative;  // Direkter D-Anteil ohne Glättung!
   
   // Fehler für nächsten Durchlauf speichern
   lastError = error;
@@ -391,14 +392,27 @@ void driveMotors(float speed) {
   int motorSpeed = abs(speed);
   
   // ========================================
-  // DEADZONE (TOTZONE) PRÜFUNG
+  // DEADZONE MIT HYSTERESE
   // ========================================
-  // Motoren haben statische Reibung
-  // Unter einem Mindest-PWM drehen sie nicht
-  // Zu kleine Outputs werden ignoriert
-  if (motorSpeed < deadzone) {
-    stopMotor();
-    return;
+  // Hysterese verhindert Oszillation bei kleinen Auslenkungen:
+  // - Motor startet erst bei 'deadzone' (z.B. 120)
+  // - Motor stoppt erst bei 'hysteresis' (z.B. 80)
+  // Dadurch: kein Zappeln mehr bei geringen Fehlern!
+
+  if (motorRunning) {
+    // Motor läuft bereits → niedrigere Schwelle zum Weiterlaufen
+    if (motorSpeed < hysteresis) {
+      stopMotor();
+      motorRunning = false;
+      return;
+    }
+  } else {
+    // Motor steht → höhere Schwelle zum Starten
+    if (motorSpeed < deadzone) {
+      stopMotor();
+      return;
+    }
+    motorRunning = true;
   }
 
   // PWM auf gültige Werte begrenzen (minSpeed bis maxSpeed)
@@ -449,6 +463,9 @@ void stopMotor() {
   // Integral zurücksetzen wenn gestoppt
   // Verhindert dass sich Fehler während Stillstand aufsummiert
   integral = 0;
+
+  // Motor-Status zurücksetzen
+  motorRunning = false;
 }
 
 // ========================================

@@ -15,6 +15,7 @@ import matplotlib.animation as animation
 from collections import deque
 import re
 import sys
+import time
 
 # ========================================
 # KONFIGURATION
@@ -39,8 +40,18 @@ time_counter = 0
 try:
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
     print(f"✓ Verbunden mit {SERIAL_PORT} @ {BAUD_RATE} Baud")
+
+    # Kurz warten bis Arduino bereit ist
+    time.sleep(2)
+
+    # Debug-Modus automatisch aktivieren
+    print("Aktiviere Debug-Modus...")
+    ser.write(b'R')
+    ser.flush()
+    time.sleep(0.5)
+
+    print("✓ Debug-Modus aktiviert")
     print("Warte auf Daten vom Arduino...")
-    print("WICHTIG: Debug-Modus muss aktiv sein (Befehl 'R' senden)")
     print("-" * 60)
 except serial.SerialException as e:
     print(f"✗ Fehler beim Öffnen von {SERIAL_PORT}: {e}")
