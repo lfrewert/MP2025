@@ -30,9 +30,9 @@ ICM42688 IMU(Wire, 0x68);
 // ========================================
 // Diese Werte müssen angepasst werden!
 // Tuning-Reihenfolge: Erst Kp, dann Kd, zuletzt Ki
-float Kp = 50.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung
+float Kp = 45.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung
 float Ki = 0.0;   // Integral-Anteil: Korrigiert bleibende Abweichung über Zeit
-float Kd = 5.0;   // Differential-Anteil: Dämpft Oszillationen + schnellere Reaktion
+float Kd = 10.0;  // Differential-Anteil: Dämpft Überschwingen
 
 // ========================================
 // PID REGLER VARIABLEN
@@ -42,6 +42,7 @@ float input = 0.0;         // Aktueller Winkel vom IMU (pitch)
 float output = 0.0;        // PID-Ausgabe → Motor-PWM-Wert
 float lastError = 0.0;     // Fehler vom letzten Durchlauf (für D-Anteil)
 float integral = 0.0;      // Aufsummierter Fehler (für I-Anteil)
+float derivativeSmoothed = 0.0;  // Geglätteter D-Anteil (gegen Rauschen/Oszillation)
 
 // ========================================
 // TIMING VARIABLEN
@@ -52,10 +53,10 @@ float deltaTime = 0.0;           // Zeit zwischen zwei Loop-Durchläufen in Seku
 // ========================================
 // MOTOR GRENZEN
 // ========================================
-int minSpeed = 100;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
-int maxSpeed = 255;        // Maximale PWM (255 = volle Geschwindigkeit)
-int deadzone = 50;         // Totzone: PID-Output unter diesem Wert wird ignoriert
-int hysteresis = 80;        // Hysterese: Läuft Motor schon, darf er bis hier weiterlaufen
+int minSpeed = 140;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
+int maxSpeed = 210;        // Maximale PWM (255 = volle Geschwindigkeit)
+int deadzone = 70;         // Totzone: PID-Output unter diesem Wert wird ignoriert
+int hysteresis = 50;       // Hysterese: Läuft Motor schon, darf er bis hier weiterlaufen
 
 // ========================================
 // WINKEL-BERECHNUNG VARIABLEN
@@ -71,11 +72,11 @@ float pitchOffset = 0.0;   // Pitch-Offset für Referenzposition
 float accelXSmoothed = 0.0;      // Geglätteter AccelX Wert
 float accelZSmoothed = 0.0;      // Geglätteter AccelZ Wert
 float smoothingFactor = 0.3;     // 0.0 = sehr glatt, 1.0 = keine Glättung
-float spikeThreshold = 0.2;      // Sprünge über 0.5g werden als Spike ignoriert
+float spikeThreshold = 0.3;      // Sprünge über 0.5g werden als Spike ignoriert
 
 // Complementary Filter Gewichtung:
 // 0.98 = 98% Gyro (schnell, aber driftet), 2% Accel (langsam, aber stabil)
-float complementaryFilter = 0.92;
+float complementaryFilter = 0.99;
 
 // ========================================
 // STURZ-ERKENNUNG MIT DEBOUNCING
@@ -336,8 +337,9 @@ void updateIMU() {
 // ========================================
 // Berechnet Motor-Output basierend auf Abweichung vom Sollwert
 float computePID() {
-  // Fehler = Differenz zwischen Soll (0°) und Ist (aktueller Winkel)
-  float error = setpoint - input;
+  // Fehler = Aktueller Winkel minus Soll-Winkel (für Segway-Logik)
+  // Kippt nach vorne (+pitch) → positiver error → Motor fährt vorwärts
+  float error = input - setpoint;
   
   // ========================================
   // P - PROPORTIONAL ANTEIL
@@ -358,13 +360,17 @@ float computePID() {
   float I = Ki * integral;
   
   // ========================================
-  // D - DIFFERENTIAL ANTEIL (OHNE GLÄTTUNG)
+  // D - DIFFERENTIAL ANTEIL (MIT GLÄTTUNG)
   // ========================================
   // Reagiert auf Änderungsgeschwindigkeit des Fehlers
   // Dämpft Oszillationen und Überschwingen
   float derivative = (error - lastError) / deltaTime;
 
-  float D = Kd * derivative;  // Direkter D-Anteil ohne Glättung!
+  // D-Anteil glätten um Rauschen zu unterdrücken (Balance: Glättung vs. Reaktion)
+  // 70% alter Wert, 30% neuer Wert = moderate Glättung
+  derivativeSmoothed = derivativeSmoothed * 0.70 + derivative * 0.30;
+
+  float D = Kd * derivativeSmoothed;  // Nutze geglätteten Wert!
   
   // Fehler für nächsten Durchlauf speichern
   lastError = error;
@@ -419,21 +425,21 @@ void driveMotors(float speed) {
   motorSpeed = constrain(motorSpeed, minSpeed, maxSpeed);
   
   // ========================================
-  // MOTOR-RICHTUNG SETZEN
+  // MOTOR-RICHTUNG SETZEN (SEGWAY-LOGIK)
   // ========================================
   // H-Bridge Ansteuerung über IN1-IN4 Pins
   if (forward) {
-    // Vorwärts: Roboter fährt vorwärts um nach hinten zu kippen
-    digitalWrite(IN1, HIGH);
-    digitalWrite(IN2, LOW);
-    digitalWrite(IN3, HIGH);
-    digitalWrite(IN4, LOW);
-  } else {
-    // Rückwärts: Roboter fährt rückwärts um nach vorne zu kippen
+    // Vorwärts: Fängt nach-vorne-Kippen ab (Räder fahren unter Schwerpunkt)
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
     digitalWrite(IN3, LOW);
     digitalWrite(IN4, HIGH);
+  } else {
+    // Rückwärts: Fängt nach-hinten-Kippen ab
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
   }
   
   // ========================================
