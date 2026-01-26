@@ -1,4 +1,3 @@
-#include <Wire.h>
 #include <SPI.h>
 #include <ICM42688.h>
 
@@ -6,24 +5,38 @@
 // TIMING KONFIGURATION
 // ========================================
 // Ziel-Loop-Frequenz: 1000 Hz = 1000 Mikrosekunden pro Loop
-#define TARGET_LOOP_TIME_US 1000
+#define TARGET_LOOP_TIME_US 1000 // in Mikrosekunden
 
 // ========================================
-// MOTOR PINS DEFINITION
+// MOTOR PINS DEFINITION (ESP32)
 // ========================================
-int ENA = 9;   // PWM für Motor A Geschwindigkeit
-int IN1 = 7;   // Motor A Richtung 1
-int IN2 = 8;   // Motor A Richtung 2
-int ENB = 6;   // PWM für Motor B Geschwindigkeit
-int IN3 = 3;   // Motor B Richtung 1
-int IN4 = 4;   // Motor B Richtung 2
+int ENA = 25;  // PWM für Motor A Geschwindigkeit (ESP32 GPIO25)
+int IN1 = 26;  // Motor A Richtung 1 (ESP32 GPIO26)
+int IN2 = 27;  // Motor A Richtung 2 (ESP32 GPIO27)
+int ENB = 33;  // PWM für Motor B Geschwindigkeit (ESP32 GPIO33)
+int IN3 = 32;  // Motor B Richtung 1 (ESP32 GPIO32)
+int IN4 = 14;  // Motor B Richtung 2 (ESP32 GPIO14)
+
+// ESP32 PWM Channels
+#define PWM_CHANNEL_A 0    // LEDC Channel für Motor A
+#define PWM_CHANNEL_B 1    // LEDC Channel für Motor B
+#define PWM_FREQUENCY 20000 // 20 kHz PWM Frequenz
+#define PWM_RESOLUTION 8    // 8-bit Resolution (0-255)
 
 // ========================================
-// IMU SENSOR OBJEKT
+// SPI PINS DEFINITION (ESP32 VSPI)
+// ========================================
+#define SPI_MOSI 23  // Master Out Slave In
+#define SPI_MISO 19  // Master In Slave Out
+#define SPI_SCK  18  // Serial Clock
+#define SPI_CS   5   // Chip Select (ICM42688)
+
+// ========================================
+// IMU SENSOR OBJEKT (SPI)
 // ========================================
 // ICM42688-P: 6-Achsen IMU (3-Achsen Beschleunigung + 3-Achsen Gyroskop)
-// I2C-Adresse: 0x68 (Standard) oder 0x69 wenn AD0 Pin auf HIGH
-ICM42688 IMU(Wire, 0x68);
+// SPI-Kommunikation für höhere Geschwindigkeit und bessere EMI-Resistenz
+ICM42688 IMU(SPI, SPI_CS);
 
 // ========================================
 // PID REGLER PARAMETE
@@ -31,8 +44,8 @@ ICM42688 IMU(Wire, 0x68);
 // Diese Werte müssen angepasst werden!
 // Tuning-Reihenfolge: Erst Kp, dann Kd, zuletzt Ki
 float Kp = 20.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung 20
-float Ki = 0.05;   // Integral-Anteil: Korrigiert bleibende Abweichung über Zeit 0.05
-float Kd = 0.4;  // Differential-Anteil: Dämpft Überschwingen 0.4
+float Ki = 0.00;   // Integral-Anteil: Korrigiert bleibende Abweichung über Zeit 0.05
+float Kd = 0.0;  // Differential-Anteil: Dämpft Überschwingen 0.4
 
 // ========================================
 // PID REGLER VARIABLEN
@@ -76,7 +89,7 @@ float spikeThreshold = 0.3;      // Sprünge über 0.5g werden als Spike ignorie
 
 // Complementary Filter Gewichtung:
 // 0.98 = 98% Gyro (schnell, aber driftet), 2% Accel (langsam, aber stabil)
-float complementaryFilter = 0.40;
+float complementaryFilter = 0.98;
 
 // ========================================
 // STURZ-ERKENNUNG MIT DEBOUNCING
@@ -86,7 +99,7 @@ float complementaryFilter = 0.40;
 int fallCounter = 0;              // Zähler für Samples über Grenze
 
 // ========================================
-// DEBUG-MODUS (per Serial-Kommando steuerbar)
+// DEBUG-MODUS (per Serial-Kommando steuerbar)r
 // ========================================
 bool debugMode = false;  // Debug-Ausgaben an/aus (Standard: aus für maximale Performance)
 
@@ -111,28 +124,34 @@ void setup() {
   // Serial-Kommunikation mit 115200 Baud starten
   Serial.begin(115200);
   
-  // Motor-Pins als Ausgänge konfigurieren
-  pinMode(ENA, OUTPUT);
+  // ========================================
+  // ESP32 PWM KONFIGURATION
+  // ========================================
+  // LEDC (LED Controller) für Motor-PWM nutzen
+  ledcSetup(PWM_CHANNEL_A, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcSetup(PWM_CHANNEL_B, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcAttachPin(ENA, PWM_CHANNEL_A);
+  ledcAttachPin(ENB, PWM_CHANNEL_B);
+
+  // Motor-Richtungs-Pins als Ausgänge konfigurieren
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
-  pinMode(ENB, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
   
   // Motoren initial stoppen (Sicherheit)
   stopMotor();
-  
+
   // ========================================
-  // I²C INITIALISIERUNG
+  // SPI INITIALISIERUNG
   // ========================================
-  Wire.begin();
-  
-  // I²C Taktfrequenz auf 400 kHz setzen (Fast Mode)
-  // Ermöglicht schnellere Datenübertragung vom IMU
-  Wire.setClock(400000);
-  
+  // SPI mit 10 MHz für schnelle, EMI-resistente Kommunikation
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SPI_CS);
+  pinMode(SPI_CS, OUTPUT);
+  digitalWrite(SPI_CS, HIGH);  // CS initial HIGH (inaktiv)
+
   // ========================================
-  // IMU SENSOR INITIALISIERUNG
+  // IMU SENSOR INITIALISIERUNG (SPI)
   // ========================================
   int status = IMU.begin();
   if (status < 0) {
@@ -207,7 +226,7 @@ void setup() {
 // Wir messen diesen Offset und ziehen ihn später von allen Messungen ab
 void calibrateIMU() {
   float gyroXSum = 0;
-  int samples = 100;  // 100 Messungen für guten Durchschnitt
+  int samples = 200;  // 200 Messungen für guten Durchschnitt
 
   Serial.print("Kalibriere Gyroskop");
 
@@ -447,8 +466,8 @@ void driveMotors(float speed) {
   // ========================================
   // PWM-Wert 0-255:
   // 0 = Motor aus, 255 = volle Geschwindigkeit
-  analogWrite(ENA, motorSpeed);  // Motor A
-  analogWrite(ENB, motorSpeed);  // Motor B
+  ledcWrite(PWM_CHANNEL_A, motorSpeed);  // Motor A (ESP32 LEDC)
+  ledcWrite(PWM_CHANNEL_B, motorSpeed);  // Motor B (ESP32 LEDC)
 }
 
 // ========================================
@@ -457,8 +476,8 @@ void driveMotors(float speed) {
 // Stoppt beide Motoren sofort und sicher
 void stopMotor() {
   // PWM auf 0 setzen (Motoren aus)
-  analogWrite(ENA, 0);
-  analogWrite(ENB, 0);
+  ledcWrite(PWM_CHANNEL_A, 0);  // Motor A (ESP32 LEDC)
+  ledcWrite(PWM_CHANNEL_B, 0);  // Motor B (ESP32 LEDC)
 
   // Alle Richtungs-Pins auf LOW (zusätzliche Sicherheit)
   digitalWrite(IN1, LOW);
