@@ -5,8 +5,8 @@
 // ========================================
 // TIMING KONFIGURATION
 // ========================================
-// Ziel-Loop-Frequenz: 500 Hz = 2000 Mikrosekunden pro Loop
-#define TARGET_LOOP_TIME_US 2000
+// Ziel-Loop-Frequenz: 1000 Hz = 1000 Mikrosekunden pro Loop
+#define TARGET_LOOP_TIME_US 1000
 
 // ========================================
 // MOTOR PINS DEFINITION
@@ -30,9 +30,9 @@ ICM42688 IMU(Wire, 0x68);
 // ========================================
 // Diese Werte müssen angepasst werden!
 // Tuning-Reihenfolge: Erst Kp, dann Kd, zuletzt Ki
-float Kp = 80.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung
-float Ki = 0.0;   // Integral-Anteil: Korrigiert bleibende Abweichung über Zeit
-float Kd = 20.0;  // Differential-Anteil: Dämpft Überschwingen
+float Kp = 20.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung 20
+float Ki = 0.05;   // Integral-Anteil: Korrigiert bleibende Abweichung über Zeit 0.05
+float Kd = 0.4;  // Differential-Anteil: Dämpft Überschwingen 0.4
 
 // ========================================
 // PID REGLER VARIABLEN
@@ -53,9 +53,9 @@ float deltaTime = 0.0;           // Zeit zwischen zwei Loop-Durchläufen in Seku
 // ========================================
 // MOTOR GRENZEN
 // ========================================
-int minSpeed = 80;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
-int maxSpeed = 230;        // Maximale PWM (255 = volle Geschwindigkeit)
-int deadzone = 80;         // Totzone: PID-Output unter diesem Wert wird ignoriert
+int minSpeed = 70;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
+int maxSpeed = 245;        // Maximale PWM (255 = volle Geschwindigkeit)
+int deadzone = 70;         // Totzone: PID-Output unter diesem Wert wird ignoriert
 int hysteresis = 50;       // Hysterese: Läuft Motor schon, darf er bis hier weiterlaufen
 
 // ========================================
@@ -76,13 +76,13 @@ float spikeThreshold = 0.3;      // Sprünge über 0.5g werden als Spike ignorie
 
 // Complementary Filter Gewichtung:
 // 0.98 = 98% Gyro (schnell, aber driftet), 2% Accel (langsam, aber stabil)
-float complementaryFilter = 0.90;
+float complementaryFilter = 0.40;
 
 // ========================================
 // STURZ-ERKENNUNG MIT DEBOUNCING
 // ========================================
-#define FALL_THRESHOLD 90.0       // Winkel-Grenze in Grad
-#define FALL_SAMPLES_REQUIRED 300  // Anzahl aufeinanderfolgende Samples über Grenze
+#define FALL_THRESHOLD 70.0       // Winkel-Grenze in Grad
+#define FALL_SAMPLES_REQUIRED 150  // Anzahl aufeinanderfolgende Samples über Grenze
 int fallCounter = 0;              // Zähler für Samples über Grenze
 
 // ========================================
@@ -160,16 +160,16 @@ void setup() {
   // ========================================
   // SAMPLE RATE KONFIGURATION
   // ========================================
-  // Output Data Rate (ODR) auf 1000 Hz setzen
-  // Sensor misst intern 1000x pro Sekunde
-  IMU.setAccelODR(ICM42688::odr1k);   // 1000 Hz Beschleunigung
-  IMU.setGyroODR(ICM42688::odr1k);    // 1000 Hz Gyroskop
+  // Output Data Rate (ODR) auf 2000 Hz setzen
+  // Sensor misst intern 2000x pro Sekunde (ausreichend für 1000 Hz Loop)
+  IMU.setAccelODR(ICM42688::odr2k);   // 2000 Hz Beschleunigung
+  IMU.setGyroODR(ICM42688::odr2k);    // 2000 Hz Gyroskop
   
   Serial.println("Self-Balancing Robot initialisiert!");
   Serial.println("Kalibrierung läuft... Roboter aufrecht halten!");
-  
-  // 5 Sekunden Wartezeit zum Aufstellen des Roboters
-  delay(5000);
+
+  // 1 Sekunde Wartezeit zum Aufstellen des Roboters
+  delay(1000);
   
   // Gyro-Offset und Pitch-Offset bestimmen
   calibrateIMU();
@@ -207,11 +207,11 @@ void setup() {
 // Wir messen diesen Offset und ziehen ihn später von allen Messungen ab
 void calibrateIMU() {
   float gyroXSum = 0;
-  int samples = 200;  // 200 Messungen für guten Durchschnitt
-  
+  int samples = 100;  // 100 Messungen für guten Durchschnitt
+
   Serial.print("Kalibriere Gyroskop");
-  
-  // 200 Samples vom Gyroskop sammeln
+
+  // 100 Samples vom Gyroskop sammeln
   for(int i = 0; i < samples; i++) {
     IMU.getAGT();  // Alle Achsen lesen (Accel, Gyro, Temperatur)
     gyroXSum += IMU.gyrX();  // X-Achse aufsummieren
@@ -521,8 +521,8 @@ void loop() {
   // ========================================
   // STURZ-ERKENNUNG MIT DEBOUNCING
   // ========================================
-  // Prüft ob Roboter zu weit gekippt ist (> 90°)
-  if (abs(pitch) > FALL_THRESHOLD) {
+  // Prüft ob Roboter zu weit gekippt ist (> 70°)
+  if (fabs(pitch) > FALL_THRESHOLD) {
     fallCounter++;  // Zähler erhöhen
     
     // Nur wenn N Samples IN FOLGE über Grenze → tatsächlich gefallen
