@@ -1,5 +1,9 @@
 #include <SPI.h>
 #include <ICM42688.h>
+#include <BluetoothSerial.h>
+
+// Bluetooth Serial Objekt
+BluetoothSerial SerialBT;
 
 // ========================================
 // TIMING KONFIGURATION
@@ -43,9 +47,9 @@ ICM42688 IMU(SPI, SPI_CS);
 // ========================================
 // Diese Werte müssen angepasst werden!
 // Tuning-Reihenfolge: Erst Kp, dann Kd, zuletzt Ki
-float Kp = 20.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung 20
+float Kp = 40.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung 20
 float Ki = 0.00;   // Integral-Anteil: Korrigiert bleibende Abweichung über Zeit 0.05
-float Kd = 0.0;  // Differential-Anteil: Dämpft Überschwingen 0.4
+float Kd = 4.0;  // Differential-Anteil: Dämpft Überschwingen 0.4
 
 // ========================================
 // PID REGLER VARIABLEN
@@ -92,6 +96,26 @@ float spikeThreshold = 0.3;      // Sprünge über 0.5g werden als Spike ignorie
 float complementaryFilter = 0.98;
 
 // ========================================
+// ZUSÄTZLICHER ACCEL-PITCH LOW-PASS FILTER (optional)
+// ========================================
+// Kann per Serial-Kommando aktiviert/deaktiviert werden
+// Filtert EMI-Rauschen aus Beschleunigungssensor VOR Complementary Filter
+bool accelPitchFilterEnabled = false;  // Filter an/aus (Standard: aus)
+float accelPitchFilterAlpha = 0.5;     // Filter-Stärke: 0.0=sehr glatt, 1.0=kein Filter
+float accelPitchFiltered = 0.0;        // Gefilterter Accel-Pitch-Wert (EMA)
+
+// Filter-Typ Auswahl
+enum FilterType { FILTER_NONE, FILTER_EMA, FILTER_BUTTERWORTH };
+FilterType currentFilterType = FILTER_NONE;
+
+// Butterworth 2nd Order Filter Variablen
+// Biquad-Koeffizienten für Cutoff ~100 Hz bei 1000 Hz Sampling
+float bw_b0 = 0.0674553, bw_b1 = 0.1349105, bw_b2 = 0.0674553;
+float bw_a1 = -1.1429805, bw_a2 = 0.4128016;
+float bw_x1 = 0.0, bw_x2 = 0.0;  // Vorherige Inputs
+float bw_y1 = 0.0, bw_y2 = 0.0;  // Vorherige Outputs
+
+// ========================================
 // STURZ-ERKENNUNG MIT DEBOUNCING
 // ========================================
 #define FALL_THRESHOLD 70.0       // Winkel-Grenze in Grad
@@ -118,12 +142,60 @@ float computePID();
 void driveMotors(float speed);
 
 // ========================================
+// HILFSFUNKTIONEN für Dual-Output (USB + Bluetooth)
+// ========================================
+void printBoth(const char* text) {
+  Serial.print(text);
+  SerialBT.print(text);
+}
+
+void printBoth(String text) {
+  Serial.print(text);
+  SerialBT.print(text);
+}
+
+void printlnBoth(const char* text) {
+  Serial.println(text);
+  SerialBT.println(text);
+}
+
+void printlnBoth(String text) {
+  Serial.println(text);
+  SerialBT.println(text);
+}
+
+void printlnBoth(float value, int decimals = 2) {
+  Serial.println(value, decimals);
+  SerialBT.println(value, decimals);
+}
+
+void printlnBoth(int value) {
+  Serial.println(value);
+  SerialBT.println(value);
+}
+
+// Wrapper für Serial.available() - prüft beide Kanäle
+char readBoth() {
+  if (Serial.available()) {
+    return Serial.read();
+  }
+  if (SerialBT.available()) {
+    return SerialBT.read();
+  }
+  return 0;
+}
+
+// ========================================
 // SETUP FUNKTION - Wird einmal beim Start ausgeführt
 // ========================================
 void setup() {
   // Serial-Kommunikation mit 115200 Baud starten
   Serial.begin(115200);
-  
+
+  // Bluetooth Serial initialisieren
+  SerialBT.begin("ESP32_Balancer");  // Bluetooth Name
+  Serial.println("Bluetooth gestartet! Verbinde mit 'ESP32_Balancer'");
+
   // ========================================
   // ESP32 PWM KONFIGURATION
   // ========================================
@@ -194,14 +266,24 @@ void setup() {
   calibrateIMU();
   
   Serial.println("Kalibrierung abgeschlossen. Balance-Regelung aktiv!");
-  Serial.println("---------------------------------------------------");
-  Serial.println("Tuning-Befehle:");
-  Serial.println("P/p = Kp erhöhen/verringern");
-  Serial.println("I/i = Ki erhöhen/verringern");
-  Serial.println("D/d = Kd erhöhen/verringern");
-  Serial.println("R/r = Debug-Modus an/aus (Pitch-Ausgabe @ 20Hz)");
-  Serial.println("S   = Nothalt");
-  Serial.println("---------------------------------------------------");
+  Serial.println("===================================================");
+  Serial.println("VERFÜGBARE KOMMANDOS:");
+  Serial.println("===================================================");
+  Serial.println("PID-Tuning:");
+  Serial.println("  P/p = Kp erhöhen/verringern (±1.0)");
+  Serial.println("  I/i = Ki erhöhen/verringern (±0.1)");
+  Serial.println("  D/d = Kd erhöhen/verringern (±0.1)");
+  Serial.println("");
+  Serial.println("EMI-Filter (gegen PWM-Störungen):");
+  Serial.println("  F/f = EMA-Filter umschalten (1. Ordnung, schnell)");
+  Serial.println("  B/b = Butterworth-Filter umschalten (2. Ordnung)");
+  Serial.println("  L/l = Filter-Stärke ±0.05 (nur für EMA)");
+  Serial.println("");
+  Serial.println("System:");
+  Serial.println("  R/r = Debug-Modus an/aus (Pitch @ 20Hz)");
+  Serial.println("  S/s = Nothalt (Motor stoppen)");
+  Serial.println("  ?   = Diese Hilfe anzeigen");
+  Serial.println("===================================================");
   Serial.print("Ziel-Frequenz: ");
   Serial.print(1000000 / TARGET_LOOP_TIME_US);
   Serial.println(" Hz");
@@ -270,7 +352,10 @@ void calibrateIMU() {
   
   // Start-Position als 0° definieren (Referenz)
   pitch = 0.0;
-  
+
+  // Accel-Pitch-Filter mit Startwert initialisieren
+  accelPitchFiltered = 0.0;
+
   Serial.print("Pitch-Offset gespeichert: ");
   Serial.print(pitchOffset);
   Serial.println("°");
@@ -333,20 +418,49 @@ void updateIMU() {
   // atan2 berechnet Winkel aus X- und Z-Beschleunigung
   // Ergebnis in Radianten → Umrechnung in Grad
   float accelPitch = atan2(accelXSmoothed, accelZSmoothed) * 180.0 / PI;
-  
+
+  // ========================================
+  // ZUSÄTZLICHER ACCEL-PITCH LOW-PASS FILTER (optional)
+  // ========================================
+  float filteredAccelPitch;
+
+  if (currentFilterType == FILTER_EMA) {
+    // EMA (1. Ordnung) - Schnell, minimaler Phase Delay
+    // IIR-Filter: filtered = filtered × (1-α) + raw × α
+    // Mit α=0.5: 50% alter Wert, 50% neuer Wert
+    accelPitchFiltered = accelPitchFiltered * (1.0 - accelPitchFilterAlpha) + accelPitch * accelPitchFilterAlpha;
+    filteredAccelPitch = accelPitchFiltered;
+
+  } else if (currentFilterType == FILTER_BUTTERWORTH) {
+    // Butterworth 2nd Order - Steilerer Roll-Off (-40 dB/Dekade)
+    // Biquad Direct Form II: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+    float output = bw_b0 * accelPitch + bw_b1 * bw_x1 + bw_b2 * bw_x2 - bw_a1 * bw_y1 - bw_a2 * bw_y2;
+
+    // Update State
+    bw_x2 = bw_x1;
+    bw_x1 = accelPitch;
+    bw_y2 = bw_y1;
+    bw_y1 = output;
+
+    filteredAccelPitch = output;
+
+  } else {
+    // Kein Filter
+    filteredAccelPitch = accelPitch;
+  }
+
   // ========================================
   // COMPLEMENTARY FILTER (SENSOR FUSION)
   // ========================================
-  // Kombiniert Gyroskop (schnell, aber driftet) mit 
+  // Kombiniert Gyroskop (schnell, aber driftet) mit
   // Beschleunigung (stabil, aber verrauscht)
-  // 
-  // Gewichtung 96/4:
-  // - 96% vom Gyro (integriert über Zeit): pitch + gyroX × Δt
-  // - 4% vom Accel (korrigiert Drift): accelPitch - pitchOffset
-  pitch = complementaryFilter * (pitch + gyroX * deltaTime) + 
-          (1.0 - complementaryFilter) * (accelPitch - pitchOffset);
+  //
+  // Gewichtung 98/2:
+  // - 98% vom Gyro (integriert über Zeit): pitch + gyroX × Δt
+  // - 2% vom Accel (korrigiert Drift): filteredAccelPitch - pitchOffset
+  pitch = complementaryFilter * (pitch + gyroX * deltaTime) +
+          (1.0 - complementaryFilter) * (filteredAccelPitch - pitchOffset);
 
-  
   // Aktuellen Winkel für PID-Regler speichern
   input = pitch;
 }
@@ -528,11 +642,11 @@ void loop() {
   if (debugMode) {
     static unsigned long lastDiag = 0;
     if (millis() - lastDiag > 50) {  // 20 Hz Update-Rate
-      Serial.print("Pitch: "); Serial.print(pitch, 2);
-      Serial.print("° | Output: "); Serial.print(output, 1);
-      Serial.print(" | FallCnt: "); Serial.print(fallCounter);
-      Serial.print(" | Freq: "); Serial.print(1.0 / deltaTime, 0);
-      Serial.println(" Hz");
+      printBoth("Pitch: "); printBoth(String(pitch, 2));
+      printBoth("° | Output: "); printBoth(String(output, 1));
+      printBoth(" | FallCnt: "); printBoth(String(fallCounter));
+      printBoth(" | Freq: "); printBoth(String(1.0 / deltaTime, 0));
+      printlnBoth(" Hz");
       lastDiag = millis();
     }
   }
@@ -594,95 +708,164 @@ void loop() {
   // ========================================
   // SERIAL KOMMANDOS FÜR PID-TUNING
   // ========================================
-  // Verarbeitet Kommandos über Serial Monitor
-  if (Serial.available()) {
-    char cmd = Serial.read();
+  // Verarbeitet Kommandos über USB oder Bluetooth
+  char cmd = readBoth();
+  if (cmd != 0) {
     
     // Kp Tuning
     if (cmd == 'P') {
       Kp += 1.0;
-      Serial.print(">>> Kp = ");
-      Serial.println(Kp);
+      printBoth(">>> Kp = ");
+      printlnBoth(Kp);
     }
     else if (cmd == 'p') {
       Kp -= 1.0;
-      Kp = max(0.0, Kp);  // Nicht negativ werden lassen
-      Serial.print(">>> Kp = ");
-      Serial.println(Kp);
+      Kp = max(0.0f, Kp);  // Nicht negativ werden lassen
+      printBoth(">>> Kp = ");
+      printlnBoth(Kp);
     }
-    
+
     // Ki Tuning
     else if (cmd == 'I') {
       Ki += 0.1;
-      Serial.print(">>> Ki = ");
-      Serial.println(Ki, 2);
+      printBoth(">>> Ki = ");
+      printlnBoth(Ki, 2);
     }
     else if (cmd == 'i') {
       Ki -= 0.1;
-      Ki = max(0.0, Ki);
-      Serial.print(">>> Ki = ");
-      Serial.println(Ki, 2);
+      Ki = max(0.0f, Ki);
+      printBoth(">>> Ki = ");
+      printlnBoth(Ki, 2);
     }
-    
+
     // Kd Tuning
     else if (cmd == 'D') {
       Kd += 0.1;
-      Serial.print(">>> Kd = ");
-      Serial.println(Kd, 2);
+      printBoth(">>> Kd = ");
+      printlnBoth(Kd, 2);
     }
     else if (cmd == 'd') {
       Kd -= 0.1;
-      Kd = max(0.0, Kd);
-      Serial.print(">>> Kd = ");
-      Serial.println(Kd, 2);
+      Kd = max(0.0f, Kd);
+      printBoth(">>> Kd = ");
+      printlnBoth(Kd, 2);
     }
-    
+
+    // EMA-Filter umschalten
+    else if (cmd == 'F' || cmd == 'f') {
+      if (currentFilterType == FILTER_EMA) {
+        currentFilterType = FILTER_NONE;
+        printlnBoth(">>> Pitch-Filter AUS");
+      } else {
+        currentFilterType = FILTER_EMA;
+        // Mit aktuellem Wert initialisieren
+        IMU.getAGT();
+        float accelX = IMU.accZ();
+        float accelZ = IMU.accY();
+        float currentAccelPitch = atan2(accelX, accelZ) * 180.0 / PI;
+        accelPitchFiltered = currentAccelPitch;
+        printBoth(">>> Pitch-Filter AN (EMA, Alpha=");
+        printBoth(String(accelPitchFilterAlpha, 2));
+        printlnBoth(")");
+      }
+    }
+
+    // Butterworth-Filter umschalten
+    else if (cmd == 'B' || cmd == 'b') {
+      if (currentFilterType == FILTER_BUTTERWORTH) {
+        currentFilterType = FILTER_NONE;
+        printlnBoth(">>> Pitch-Filter AUS");
+      } else {
+        currentFilterType = FILTER_BUTTERWORTH;
+        // State zurücksetzen
+        bw_x1 = bw_x2 = bw_y1 = bw_y2 = 0.0;
+        printlnBoth(">>> Pitch-Filter AN (Butterworth 2nd, Fc=100Hz)");
+      }
+    }
+
+    // Filter-Stärke Tuning
+    else if (cmd == 'L') {
+      accelPitchFilterAlpha += 0.05;
+      accelPitchFilterAlpha = min(1.0f, accelPitchFilterAlpha);  // Nicht über 1.0
+      printBoth(">>> Filter Alpha = ");
+      printlnBoth(accelPitchFilterAlpha, 2);
+      printlnBoth("    (höher = weniger Glättung)");
+    }
+    else if (cmd == 'l') {
+      accelPitchFilterAlpha -= 0.05;
+      accelPitchFilterAlpha = max(0.05f, accelPitchFilterAlpha);  // Nicht unter 0.05
+      printBoth(">>> Filter Alpha = ");
+      printlnBoth(accelPitchFilterAlpha, 2);
+      printlnBoth("    (niedriger = mehr Glättung)");
+    }
+
     // Debug-Modus umschalten
     else if (cmd == 'R' || cmd == 'r') {
       debugMode = !debugMode;
       if (debugMode) {
-        Serial.println(">>> Debug-Modus AN - Pitch-Ausgabe aktiv @ 20Hz");
+        printlnBoth(">>> Debug-Modus AN - Pitch-Ausgabe aktiv @ 20Hz");
       } else {
-        Serial.println(">>> Debug-Modus AUS - Ressourcen gespart");
+        printlnBoth(">>> Debug-Modus AUS - Ressourcen gespart");
       }
     }
-    
+
     // Nothalt
     else if (cmd == 'S' || cmd == 's') {
       stopMotor();
-      Serial.println("!!! NOTHALT aktiviert !!!");
-      Serial.println("Aktuelle PID-Werte:");
-      Serial.print("Kp = ");
-      Serial.println(Kp);
-      Serial.print("Ki = ");
-      Serial.println(Ki, 2);
-      Serial.print("Kd = ");
-      Serial.println(Kd, 2);
+      printlnBoth("!!! NOTHALT aktiviert !!!");
+      printlnBoth("Aktuelle PID-Werte:");
+      printBoth("Kp = ");
+      printlnBoth(Kp);
+      printBoth("Ki = ");
+      printlnBoth(Ki, 2);
+      printBoth("Kd = ");
+      printlnBoth(Kd, 2);
     }
-    
+
     // Hilfe anzeigen
     else if (cmd == '?') {
-      Serial.println("---------------------------------------------------");
-      Serial.println("Tuning-Befehle:");
-      Serial.println("P/p = Kp erhöhen/verringern (±1.0)");
-      Serial.println("I/i = Ki erhöhen/verringern (±0.1)");
-      Serial.println("D/d = Kd erhöhen/verringern (±0.1)");
-      Serial.println("R/r = Debug-Modus an/aus (Pitch-Ausgabe @ 20Hz)");
-      Serial.println("S/s = Nothalt");
-      Serial.println("?   = Diese Hilfe");
-      Serial.println("---------------------------------------------------");
-      Serial.print("Aktuell: Kp=");
-      Serial.print(Kp);
-      Serial.print(" Ki=");
-      Serial.print(Ki, 2);
-      Serial.print(" Kd=");
-      Serial.println(Kd, 2);
-      Serial.print("Debug-Modus: ");
-      Serial.println(debugMode ? "AN" : "AUS");
-      Serial.print("Ziel-Frequenz: ");
-      Serial.print(1000000 / TARGET_LOOP_TIME_US);
-      Serial.println(" Hz");
-      Serial.println("---------------------------------------------------");
+      printlnBoth("===================================================");
+      printlnBoth("VERFÜGBARE KOMMANDOS:");
+      printlnBoth("===================================================");
+      printlnBoth("PID-Tuning:");
+      printlnBoth("  P/p = Kp erhöhen/verringern (±1.0)");
+      printlnBoth("  I/i = Ki erhöhen/verringern (±0.1)");
+      printlnBoth("  D/d = Kd erhöhen/verringern (±0.1)");
+      printlnBoth("");
+      printlnBoth("EMI-Filter (gegen PWM-Störungen):");
+      printlnBoth("  F/f = EMA-Filter umschalten (1. Ordnung, schnell)");
+      printlnBoth("  B/b = Butterworth-Filter umschalten (2. Ordnung)");
+      printlnBoth("  L/l = Filter-Stärke ±0.05 (nur für EMA)");
+      printlnBoth("");
+      printlnBoth("System:");
+      printlnBoth("  R/r = Debug-Modus an/aus (Pitch @ 20Hz)");
+      printlnBoth("  S/s = Nothalt (Motor stoppen)");
+      printlnBoth("  ?   = Diese Hilfe anzeigen");
+      printlnBoth("===================================================");
+      printlnBoth("AKTUELLER STATUS:");
+      printlnBoth("===================================================");
+      printBoth("PID: Kp=");
+      printBoth(String(Kp, 1));
+      printBoth("  Ki=");
+      printBoth(String(Ki, 2));
+      printBoth("  Kd=");
+      printlnBoth(String(Kd, 2));
+      printBoth("Filter: ");
+      if (currentFilterType == FILTER_NONE) {
+        printlnBoth("AUS");
+      } else if (currentFilterType == FILTER_EMA) {
+        printBoth("EMA (Alpha=");
+        printBoth(String(accelPitchFilterAlpha, 2));
+        printlnBoth(")");
+      } else if (currentFilterType == FILTER_BUTTERWORTH) {
+        printlnBoth("Butterworth 2nd (Fc=100Hz)");
+      }
+      printBoth("Debug: ");
+      printlnBoth(debugMode ? "AN" : "AUS");
+      printBoth("Loop-Frequenz: ");
+      printBoth(String(1000000 / TARGET_LOOP_TIME_US));
+      printlnBoth(" Hz");
+      printlnBoth("===================================================");
     }
   }
   

@@ -1,31 +1,39 @@
 #!/usr/bin/env python3
 """
-Live visualization for ESP32 Self-Balancing Robot
+Live visualization for ESP32 Self-Balancing Robot via Bluetooth
+Uses direct Bluetooth socket connection (no rfcomm needed)
 
 Shows:
 - Pitch angle (degrees)
 - PID output (PWM)
-- Reads ESP32 debug output at ~20 Hz
+- Reads ESP32 debug output via Bluetooth Serial
 
-ESP32 expected line format:
-Pitch: -1.23° | Output: 45.6 | FallCnt: 3 | Freq: 987 Hz
+Usage:
+1. Pair ESP32 Bluetooth ("ESP32_Balancer"):
+   bluetoothctl
+   pair B0:A7:32:2A:86:06
+   trust B0:A7:32:2A:86:06
+   exit
+
+2. Run this script:
+   python3 live_plot_bluetooth_socket.py
 """
 
-import serial
-import serial.tools.list_ports
+import socket
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from collections import deque
 import re
 import sys
 import time
+import select
 
 # ========================================
 # CONFIGURATION
 # ========================================
-SERIAL_PORT = '/dev/ttyUSB0'
-BAUD_RATE = 115200
-MAX_POINTS = 200              # Sliding window size
+ESP32_MAC = 'B0:A7:32:2A:86:06'  # ESP32 Bluetooth MAC address
+RFCOMM_CHANNEL = 1  # SPP channel (always 1 for ESP32 Bluetooth Serial)
+MAX_POINTS = 200
 
 # ========================================
 # DATA BUFFERS
@@ -33,7 +41,6 @@ MAX_POINTS = 200              # Sliding window size
 time_data = deque(maxlen=MAX_POINTS)
 pitch_data = deque(maxlen=MAX_POINTS)
 output_data = deque(maxlen=MAX_POINTS)
-
 time_counter = 0
 
 # ========================================
@@ -50,7 +57,7 @@ pid_params = {
 }
 
 # ========================================
-# REGEX (MATCHES ESP32 OUTPUT EXACTLY)
+# REGEX
 # ========================================
 pattern = re.compile(
     r'^Pitch:\s*(-?\d+(?:\.\d+)?)°\s*\|\s*'
@@ -67,32 +74,60 @@ filter_butterworth_pattern = re.compile(r'>>>\s*Pitch-Filter AN \(Butterworth')
 filter_alpha_pattern = re.compile(r'>>>\s*Filter Alpha\s*=\s*(-?\d+(?:\.\d+)?)')
 
 # ========================================
-# SERIAL CONNECTION
+# BLUETOOTH SOCKET CONNECTION
 # ========================================
-def open_serial():
+def open_bluetooth_socket():
+    print(f"Attempting direct Bluetooth connection to ESP32_Balancer...")
+    print(f"MAC Address: {ESP32_MAC}")
+    print(f"RFCOMM Channel: {RFCOMM_CHANNEL}")
+    print("Make sure ESP32 is paired and powered on!")
+    print("-" * 60)
+
     try:
-        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-        print(f"✓ Connected to {SERIAL_PORT} @ {BAUD_RATE} baud")
+        # Create Bluetooth RFCOMM socket
+        sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+
+        # Set socket options for keep-alive
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+        # Set connection timeout
+        sock.settimeout(10)
+
+        print("→ Connecting to ESP32...")
+        sock.connect((ESP32_MAC, RFCOMM_CHANNEL))
+        print("✓ Connected to ESP32 via Bluetooth")
+
+        # Keep socket in blocking mode with longer timeout
+        sock.settimeout(5.0)  # 5 second timeout for reads
         time.sleep(2)
 
         # Enable ESP debug mode
         print("→ Enabling debug mode (R)")
-        ser.write(b'R')
-        ser.flush()
+        sock.send(b'R')
         time.sleep(0.5)
 
         print("✓ Debug mode enabled")
         print("-" * 60)
-        return ser
+        return sock
 
-    except serial.SerialException as e:
-        print(f"✗ Could not open {SERIAL_PORT}: {e}")
-        print("\nAvailable ports:")
-        for p in serial.tools.list_ports.comports():
-            print(f"  - {p.device}: {p.description}")
+    except OSError as e:
+        print(f"✗ Could not connect: {e}")
+        print("\nTroubleshooting:")
+        print("1. Make sure ESP32 'ESP32_Balancer' is paired:")
+        print("   bluetoothctl paired-devices")
+        print("\n2. Pair the device if not already paired:")
+        print("   bluetoothctl")
+        print("   pair B0:A7:32:2A:86:06")
+        print("   trust B0:A7:32:2A:86:06")
+        print("   exit")
+        print("\n3. Check if ESP32 is powered on and Bluetooth is active")
+        print("   (The ESP32 should show 'Bluetooth gestartet!' on USB serial)")
+        print("\n4. Make sure bluetooth service is running:")
+        print("   systemctl status bluetooth")
         sys.exit(1)
 
-ser = open_serial()
+sock = open_bluetooth_socket()
+buffer = ""
 
 # ========================================
 # PLOT SETUP
@@ -114,7 +149,7 @@ ax_btn_stop = fig.add_subplot(gs[3, 0])
 ax_commands = fig.add_subplot(gs[:, 1])
 ax_commands.axis('off')
 
-fig.suptitle("Self-Balancing Robot – Live Monitor (USB)", fontsize=16, fontweight="bold")
+fig.suptitle("Self-Balancing Robot – Bluetooth Monitor (Direct Socket)", fontsize=16, fontweight="bold")
 
 # Pitch plot
 line_pitch, = ax1.plot([], [], linewidth=2, label="Pitch [°]", color='blue')
@@ -125,7 +160,7 @@ ax1.set_ylabel("Pitch [°]")
 ax1.set_ylim(-100, 100)
 ax1.grid(alpha=0.3)
 ax1.legend()
-ax1.set_title("Pitch Angle")
+ax1.set_title("Pitch Angle (Bluetooth Socket)")
 
 # Output plot
 line_output, = ax2.plot([], [], linewidth=2, label="PID Output", color='orange')
@@ -170,8 +205,7 @@ update_param_text()
 # Emergency Stop Button
 def on_stop_click(_):
     print("→ Sending STOP command (S)")
-    ser.write(b'S')
-    ser.flush()
+    sock.send(b'S')
 
 btn_stop = Button(ax_btn_stop, 'EMERGENCY STOP (S)', color='lightcoral', hovercolor='red')
 btn_stop.on_clicked(on_stop_click)
@@ -200,7 +234,8 @@ System:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Tipp: Kommandos über
-Serial-Terminal senden!
+Serial-Terminal oder
+Bluetooth senden!
 
 EMA: Schnell, <1ms Delay
 Butterworth: Steilerer
@@ -216,96 +251,116 @@ ax_commands.text(0.05, 0.95, commands_info,
                  bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.3))
 
 # ========================================
-# SERIAL READ FUNCTION
+# SOCKET READ FUNCTION
 # ========================================
-def read_serial():
-    global time_counter
-
-    if ser.in_waiting == 0:
-        return False
+def read_socket():
+    global time_counter, buffer
 
     try:
-        line = ser.readline().decode("utf-8", errors="ignore").strip()
-
-        # Check for parameter updates (>>> Kp = 41.0)
-        param_match = param_pattern.match(line)
-        if param_match:
-            param_name = param_match.group(1)
-            param_value = float(param_match.group(2))
-            pid_params[param_name] = param_value
-            update_param_text()
-            print(f"[PARAM] {param_name} = {param_value}")
+        # Use select with small timeout to check for data
+        ready = select.select([sock], [], [], 0.1)
+        if not ready[0]:
             return False
 
-        # Check for EMA filter (>>> Pitch-Filter AN (EMA, Alpha=0.50))
-        filter_ema_match = filter_ema_pattern.match(line)
-        if filter_ema_match:
-            alpha_value = float(filter_ema_match.group(1))
-            pid_params['pitch_filter'] = 'AN'
-            pid_params['filter_alpha'] = alpha_value
-            update_param_text()
-            print(f"[FILTER] EMA Filter AN (Alpha={alpha_value})")
+        # Read available data
+        data = sock.recv(4096)  # Larger buffer
+        if not data:
+            print("[WARNING] No data received - connection may be closed")
             return False
 
-        # Check for Butterworth filter (>>> Pitch-Filter AN (Butterworth 2nd, Fc=100Hz))
-        filter_butterworth_match = filter_butterworth_pattern.match(line)
-        if filter_butterworth_match:
-            pid_params['pitch_filter'] = 'AN (Butterworth)'
-            update_param_text()
-            print(f"[FILTER] Butterworth Filter AN")
-            return False
+        # Decode and add to buffer
+        buffer += data.decode("utf-8", errors="ignore")
 
-        # Check for pitch filter status OFF (>>> Pitch-Filter AUS)
-        filter_status_match = filter_status_pattern.match(line)
-        if filter_status_match:
-            filter_status = filter_status_match.group(1)
-            if filter_status == 'AUS':
-                pid_params['pitch_filter'] = 'AUS'
+        # Process complete lines from buffer
+        while '\n' in buffer:
+            line, buffer = buffer.split('\n', 1)
+            line = line.strip()
+
+            # Check for parameter updates (>>> Kp = 41.0)
+            param_match = param_pattern.match(line)
+            if param_match:
+                param_name = param_match.group(1)
+                param_value = float(param_match.group(2))
+                pid_params[param_name] = param_value
                 update_param_text()
-                print(f"[FILTER] Pitch-Filter AUS")
-            return False
+                print(f"[PARAM] {param_name} = {param_value}")
+                continue
 
-        # Check for filter alpha updates (>>> Filter Alpha = 0.50)
-        filter_alpha_match = filter_alpha_pattern.match(line)
-        if filter_alpha_match:
-            alpha_value = float(filter_alpha_match.group(1))
-            pid_params['filter_alpha'] = alpha_value
-            update_param_text()
-            print(f"[FILTER] Alpha = {alpha_value}")
-            return False
+            # Check for EMA filter (>>> Pitch-Filter AN (EMA, Alpha=0.50))
+            filter_ema_match = filter_ema_pattern.match(line)
+            if filter_ema_match:
+                alpha_value = float(filter_ema_match.group(1))
+                pid_params['pitch_filter'] = 'AN'
+                pid_params['filter_alpha'] = alpha_value
+                update_param_text()
+                print(f"[FILTER] EMA Filter AN (Alpha={alpha_value})")
+                continue
 
-        # Ignore other ESP messages
-        if not line or line.startswith((">>>", "!!!")):
-            return False
+            # Check for Butterworth filter (>>> Pitch-Filter AN (Butterworth 2nd, Fc=100Hz))
+            filter_butterworth_match = filter_butterworth_pattern.match(line)
+            if filter_butterworth_match:
+                pid_params['pitch_filter'] = 'AN (Butterworth)'
+                update_param_text()
+                print(f"[FILTER] Butterworth Filter AN")
+                continue
 
-        match = pattern.match(line)
-        if not match:
-            print(f"[IGNORED] {line}")
-            return False
+            # Check for pitch filter status OFF (>>> Pitch-Filter AUS)
+            filter_status_match = filter_status_pattern.match(line)
+            if filter_status_match:
+                filter_status = filter_status_match.group(1)
+                if filter_status == 'AUS':
+                    pid_params['pitch_filter'] = 'AUS'
+                    update_param_text()
+                    print(f"[FILTER] Pitch-Filter AUS")
+                continue
 
-        pitch = float(match.group(1))
-        output = float(match.group(2))
-        freq = float(match.group(4))
+            # Check for filter alpha updates (>>> Filter Alpha = 0.50)
+            filter_alpha_match = filter_alpha_pattern.match(line)
+            if filter_alpha_match:
+                alpha_value = float(filter_alpha_match.group(1))
+                pid_params['filter_alpha'] = alpha_value
+                update_param_text()
+                print(f"[FILTER] Alpha = {alpha_value}")
+                continue
 
-        # Update sample rate from actual frequency
-        if freq > 0:
-            pid_params['sample_rate'] = int(freq)
+            # Ignore other ESP messages
+            if not line or line.startswith((">>>", "!!!")):
+                continue
 
-        time_data.append(time_counter)
-        pitch_data.append(pitch)
-        output_data.append(output)
-        time_counter += 1
+            match = pattern.match(line)
+            if not match:
+                continue
 
-        if time_counter % 10 == 0:
-            print(
-                f"[{time_counter:4d}] "
-                f"Pitch={pitch:6.2f}° | "
-                f"Output={output:6.1f} | "
-                f"Freq={freq:4.0f} Hz"
-            )
+            pitch = float(match.group(1))
+            output = float(match.group(2))
+            freq = float(match.group(4))
+
+            # Update sample rate from actual frequency
+            if freq > 0:
+                pid_params['sample_rate'] = int(freq)
+
+            time_data.append(time_counter)
+            pitch_data.append(pitch)
+            output_data.append(output)
+            time_counter += 1
+
+            if time_counter % 10 == 0:
+                print(
+                    f"[{time_counter:4d}] "
+                    f"Pitch={pitch:6.2f}° | "
+                    f"Output={output:6.1f} | "
+                    f"Freq={freq:4.0f} Hz"
+                )
 
         return True
 
+    except socket.timeout:
+        # Timeout is normal when no data is available
+        return False
+    except socket.error as e:
+        print(f"[SOCKET ERROR] Connection lost: {e}")
+        print("Try reconnecting or restart the script")
+        return False
     except Exception as e:
         print(f"[ERROR] {e}")
         return False
@@ -315,7 +370,7 @@ def read_serial():
 # ========================================
 def animate(_):
     for _ in range(5):
-        read_serial()
+        read_socket()
 
     if len(time_data) > 0:
         line_pitch.set_data(time_data, pitch_data)
@@ -345,7 +400,7 @@ def on_close(_):
             f"avg={sum(pitch_data)/len(pitch_data):.2f}°"
         )
     print("=" * 60)
-    ser.close()
+    sock.close()
     sys.exit(0)
 
 fig.canvas.mpl_connect("close_event", on_close)
@@ -354,6 +409,7 @@ fig.canvas.mpl_connect("close_event", on_close)
 # START
 # ========================================
 print("Opening plot window...")
+print("Receiving data via Bluetooth socket...")
 print("Close the window to exit.")
 print("-" * 60)
 
@@ -369,5 +425,5 @@ try:
 
 except KeyboardInterrupt:
     print("\nInterrupted by user")
-    ser.close()
+    sock.close()
     sys.exit(0)
