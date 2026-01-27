@@ -65,7 +65,11 @@ float derivativeSmoothed = 0.0;  // Geglätteter D-Anteil (gegen Rauschen/Oszill
 // TIMING VARIABLEN
 // ========================================
 unsigned long lastLoopTime = 0;  // Letzte Loop-Ausführung in Mikrosekunden
-float deltaTime = 0.0;           // Zeit zwischen zwei Loop-Durchläufen in Sekunden
+float deltaTime = 0.0;           // Zeit zwischen zwei Loop-Durchläufen in Sekunden (für Monitoring)
+
+// Fixed deltaTime für PID/Filter-Berechnungen (stabiler als echtes Timing)
+// Basierend auf TARGET_LOOP_TIME_US = 1000 µs → 1 ms → 0.001 s
+const float FIXED_DT = 0.001f;   // Konstante 1 ms für konsistente PID-Berechnung
 
 // ========================================
 // MOTOR GRENZEN
@@ -458,7 +462,9 @@ void updateIMU() {
   // Gewichtung 98/2:
   // - 98% vom Gyro (integriert über Zeit): pitch + gyroX × Δt
   // - 2% vom Accel (korrigiert Drift): filteredAccelPitch - pitchOffset
-  pitch = complementaryFilter * (pitch + gyroX * deltaTime) +
+  //
+  // WICHTIG: Verwendet FIXED_DT statt deltaTime für stabile Integration
+  pitch = complementaryFilter * (pitch + gyroX * FIXED_DT) +
           (1.0 - complementaryFilter) * (filteredAccelPitch - pitchOffset);
 
   // Aktuellen Winkel für PID-Regler speichern
@@ -486,8 +492,9 @@ float computePID() {
   // ========================================
   // Summiert Fehler über Zeit auf
   // Korrigiert bleibende Abweichungen (z.B. Schwerpunkt-Offset)
-  integral += error * deltaTime;
-  
+  // WICHTIG: Verwendet FIXED_DT für konsistente Integration
+  integral += error * FIXED_DT;
+
   // Anti-Windup: Begrenzung verhindert dass Integral zu groß wird
   integral = constrain(integral, -100, 100);
   float I = Ki * integral;
@@ -497,7 +504,14 @@ float computePID() {
   // ========================================
   // Reagiert auf Änderungsgeschwindigkeit des Fehlers
   // Dämpft Oszillationen und Überschwingen
-  float derivative = (error - lastError) / deltaTime;
+  //
+  // WICHTIG: Verwendet FIXED_DT statt deltaTime für stabile Ableitung
+  // Verhindert dass D-Term bei kleinen deltaTime-Schwankungen explodiert
+  float derivative = (error - lastError) / FIXED_DT;
+
+  // Derivative Limiting: Verhindert extreme Werte bei Sensor-Spikes
+  // Maximal ±500 °/s Änderungsrate (bei 1 kHz entspricht das ±0.5°/sample)
+  derivative = constrain(derivative, -500.0f, 500.0f);
 
   // D-Anteil glätten um Rauschen zu unterdrücken (Balance: Glättung vs. Reaktion)
   // 70% alter Wert, 30% neuer Wert = moderate Glättung
