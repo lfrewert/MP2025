@@ -260,9 +260,6 @@ wobei:
 
 Dieses Projekt ist Open Source und frei verwendbar für Bildungszwecke.
 
-## Danksagungen
-
-Entwickelt mit Claude Sonnet 4.5 für das Modul Mechatronische Prozesse 2025.
 
 ## Kontakt
 
