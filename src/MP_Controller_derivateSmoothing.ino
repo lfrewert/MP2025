@@ -47,9 +47,9 @@ ICM42688 IMU(SPI, SPI_CS);
 // ========================================
 // Diese Werte müssen angepasst werden!
 // Tuning-Reihenfolge: Erst Kp, dann Kd, zuletzt Ki
-float Kp = 40.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung 20
+float Kp = 20.0;  // Proportional-Anteil: Reagiert auf aktuelle Abweichung 20
 float Ki = 0.00;   // Integral-Anteil: Korrigiert bleibende Abweichung über Zeit 0.05
-float Kd = 4.0;  // Differential-Anteil: Dämpft Überschwingen 0.4
+float Kd = 0.4;  // Differential-Anteil: Dämpft Überschwingen 0.4
 
 // ========================================
 // PID REGLER VARIABLEN
@@ -74,9 +74,9 @@ const float FIXED_DT = 0.001f;   // Konstante 1 ms für konsistente PID-Berechnu
 // ========================================
 // MOTOR GRENZEN
 // ========================================
-int minSpeed = 70;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
+int minSpeed = 65;         // Minimale PWM (unter diesem Wert dreht Motor nicht)
 int maxSpeed = 245;        // Maximale PWM (255 = volle Geschwindigkeit)
-int deadzone = 70;         // Totzone: PID-Output unter diesem Wert wird ignoriert
+int deadzone = 65;         // Totzone: PID-Output unter diesem Wert wird ignoriert
 int hysteresis = 50;       // Hysterese: Läuft Motor schon, darf er bis hier weiterlaufen
 
 // ========================================
@@ -97,7 +97,7 @@ float spikeThreshold = 0.3;      // Sprünge über 0.5g werden als Spike ignorie
 
 // Complementary Filter Gewichtung:
 // 0.98 = 98% Gyro (schnell, aber driftet), 2% Accel (langsam, aber stabil)
-float complementaryFilter = 0.98;
+float complementaryFilter = 0.35;
 
 // ========================================
 // ZUSÄTZLICHER ACCEL-PITCH LOW-PASS FILTER (optional)
@@ -577,16 +577,16 @@ void driveMotors(float speed) {
   // H-Bridge Ansteuerung über IN1-IN4 Pins
   if (forward) {
     // Vorwärts: Fängt nach-vorne-Kippen ab (Räder fahren unter Schwerpunkt)
-    digitalWrite(IN1, LOW);
-    digitalWrite(IN2, HIGH);
-    digitalWrite(IN3, LOW);
-    digitalWrite(IN4, HIGH);
-  } else {
-    // Rückwärts: Fängt nach-hinten-Kippen ab
     digitalWrite(IN1, HIGH);
     digitalWrite(IN2, LOW);
     digitalWrite(IN3, HIGH);
     digitalWrite(IN4, LOW);
+  } else {
+    // Rückwärts: Fängt nach-hinten-Kippen ab
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
   }
   
   // ========================================
